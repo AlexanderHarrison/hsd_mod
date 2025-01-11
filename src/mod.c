@@ -7,6 +7,12 @@
 
 #include "dat.h"
 
+#if 0
+#  define PARSE_TRACE printf("%s\n", __FUNCTION__);
+#else
+#  define PARSE_TRACE
+#endif
+
 typedef struct File File;
 struct File {
     char *ptr;
@@ -66,6 +72,10 @@ char *symbol_end(Symbol *sym) {
     return sym->ptr + sym->size;
 }
 
+Symbol symbol_finish(char *start, char **file) {
+    return (Symbol) { start, (size_t)(*file - start) };
+}
+
 typedef enum ExprType {
     ExprType_u8 = 3,
     ExprType_u16,
@@ -80,7 +90,7 @@ struct ObjOffset {
 
 typedef struct Instr Instr;
 struct Instr {
-    Symbol root_name;
+    Symbol root_symbol;
     uint32_t offset_count;
     ObjOffset *offsets;
     ExprType expr_type;
@@ -91,127 +101,6 @@ struct Instr {
     Symbol instr_symbol;
     Instr *next;
 };
-
-bool is_whitespace(char **file) {
-    char c = **file;
-    return c == ' ' || c == '\n' || c == '\t';
-}
-
-bool is_alphabetic(char **file) {
-    char c = **file;
-    return ('a' <= c && c <= 'z') || ('A' <= c && c <= 'Z');
-}
-
-bool is_numeric(char **file) {
-    char c = **file;
-    return '0' <= c && c <= '9';
-}
-
-bool is_underscore(char **file) {
-    return **file == '_';
-}
-
-bool is_string_start(char **file) {
-    return is_alphabetic(file) || is_underscore(file);
-}
-
-bool is_string_continue(char **file) {
-    return is_alphabetic(file) || is_underscore(file) || is_numeric(file);
-}
-
-void take_whitespace(char **file, char *end) {
-    if (*file >= end) return;
-    while (is_whitespace(file)) {
-        (*file)++;
-        if (*file >= end) return;
-    }
-}
-
-Symbol take_string(char **file, char *end) {
-    Symbol err = { NULL, 0 };
-
-    take_whitespace(file, end);
-    if (*file >= end) return err;
-    
-    char *string_start = *file;
-    if (!is_string_start(file))
-        return err;
-
-    do {
-        (*file)++;
-    } while (*file < end && is_string_continue(file));
-
-    return (Symbol) { string_start, (size_t)(*file - string_start) };
-}
-
-// returns less than -1 on error
-int64_t take_number_unsigned(char **file, char *end) {
-    take_whitespace(file, end);
-    if (*file >= end) return -1;
-
-    bool hex = false;
-    if (*file + 2 <= end && **file == '0' && (*(*file+1) == 'x' || *(*file+1) == 'X')) {
-        hex = true;
-        *file += 2;
-    }
-
-    uint32_t n = 0;
-
-    if (hex) {
-        while (*file < end) {
-            char c = **file;
-            if (is_numeric(file))
-                n = n * 16 + (uint32_t)(c - '0');
-            else if ('a' <= c && c <= 'f')
-                n = n * 16 + (uint32_t)(c - 'f');
-            else if ('A' <= c && c <= 'F')
-                n = n * 16 + (uint32_t)(c - 'F');
-            else
-                return (int64_t)n;
-
-            (*file)++;
-        }
-    } else {
-        while (*file < end) {
-            char c = **file;
-            if (is_numeric(file))
-                n = n * 10 + (uint32_t)(c - '0');
-            else
-                return (int64_t)n;
-
-            (*file)++;
-        }
-    }
-
-    return n;
-}
-
-int64_t take_expr_type(char **file, char *end) {
-    take_whitespace(file, end);
-
-    if (*file >= end) return -1;
-
-    char c = **file;
-    if (c == 'u') {
-        (*file)++;
-        if (*file >= end) return -1;
-
-        if (**file == '8') {
-            (*file)++;
-            return ExprType_u8;
-        } else if (*file + 1 < end && **file == '1' && *(*file+1) == '6') {
-            *file += 2;
-            return ExprType_u16;
-        } else if (*file + 1 < end && **file == '3' && *(*file+1) == '2') {
-            *file += 2;
-            return ExprType_u32;
-        } else {
-            return -1;
-        }
-    } else {
-        return -1;
-    }
-}
 
 #define RED "\033[0;31m"
 #define BOLD "\033[0;1m"
@@ -263,90 +152,235 @@ void parse_err(char *err_point, const char *expected) {
     );
 }
 
-Instr *parse(Arena *arena, char *file, char *file_end) {
+bool is_whitespace(char **file) {
+    char c = **file;
+    return c == ' ' || c == '\n' || c == '\t';
+}
+
+bool is_alphabetic(char **file) {
+    char c = **file;
+    return ('a' <= c && c <= 'z') || ('A' <= c && c <= 'Z');
+}
+
+bool is_numeric(char **file) {
+    char c = **file;
+    return '0' <= c && c <= '9';
+}
+
+bool is_underscore(char **file) {
+    return **file == '_';
+}
+
+bool is_string_start(char **file) {
+    return is_alphabetic(file) || is_underscore(file);
+}
+
+bool is_string_continue(char **file) {
+    return is_alphabetic(file) || is_underscore(file) || is_numeric(file);
+}
+
+bool take_whitespace(char **file, char *end) { PARSE_TRACE
+    while (1) {
+        if (*file >= end)
+            return true;
+        if (!is_whitespace(file))
+            return false;
+        (*file)++;
+    }
+}
+
+bool take_string(char **file, char *end, Symbol *out) { PARSE_TRACE
+    if (take_whitespace(file, end))
+        return true;
+    
+    char *string_start = *file;
+    if (!is_string_start(file))
+        return true;
+
+    do {
+        (*file)++;
+    } while (*file < end && is_string_continue(file));
+
+    *out = (Symbol) { string_start, (size_t)(*file - string_start) };
+    return false;
+}
+
+bool take_number_unsigned(char **file, char *end, uint32_t *out) { PARSE_TRACE
+    if (take_whitespace(file, end))
+        return true;
+
+    bool hex = false;
+    if (*file + 2 <= end && **file == '0' && (*(*file+1) == 'x' || *(*file+1) == 'X')) {
+        hex = true;
+        *file += 2;
+    }
+
+    uint32_t n = 0;
+
+    if (hex) {
+        while (*file < end) {
+            char c = **file;
+            if (is_numeric(file))
+                n = n * 16 + (uint32_t)(c - '0');
+            else if ('a' <= c && c <= 'f')
+                n = n * 16 + (uint32_t)(c - 'a');
+            else if ('A' <= c && c <= 'F')
+                n = n * 16 + (uint32_t)(c - 'A');
+            else
+                break;
+
+            (*file)++;
+        }
+    } else {
+        while (*file < end) {
+            char c = **file;
+            if (is_numeric(file))
+                n = n * 10 + (uint32_t)(c - '0');
+            else
+                break;
+
+            (*file)++;
+        }
+    }
+
+    *out = n;
+    return false;
+}
+
+bool try_take_keyword(char **file, char *end, const char *keyword) { PARSE_TRACE
+    size_t keyword_length = strlen(keyword);
+
+    if (*file + keyword_length > end)
+        return true;
+
+    for (size_t i = 0; i < keyword_length; ++i) {
+        if (*(*file + i) != keyword[i])
+            return true;
+    }
+
+    *file += keyword_length;
+    return false;
+}
+
+bool try_take_char(char **file, char *end, char c) { PARSE_TRACE
+    if (*file >= end)
+        return true;
+    if (**file != c) {
+        return true;
+    } else {
+        (*file)++;
+        return false;
+    }
+}
+
+bool take_expr_type(char **file, char *end, ExprType *out) { PARSE_TRACE
+    if (take_whitespace(file, end))
+        return true;
+
+    if (!try_take_keyword(file, end, "u8")) {
+        *out = ExprType_u8;
+    } else if (!try_take_keyword(file, end, "u16")) {
+        *out = ExprType_u16;
+    } else if (!try_take_keyword(file, end, "u32")) {
+        *out = ExprType_u32;
+    } else {
+        return true;
+    }
+    return false;
+}
+
+bool parse_instr(Arena *arena, char **file, char *end, Instr *instr) { PARSE_TRACE
+    instr->next = NULL;
+
+    if (take_whitespace(file, end))
+        return true;
+
+    char *instr_symbol_start = *file;
+
+    if (take_string(file, end, &instr->root_symbol)) {
+        parse_err(*file, "root string");
+        return true;
+    }
+
+    instr->offsets = arena_align(arena, alignof(*instr->offsets));
+    instr->offset_count = 0;
+
+    // parse offsets
+    while (1) {
+        if (take_whitespace(file, end)) {
+            parse_err(*file, "'.' or '='");
+            return true;
+        }
+
+        if (!try_take_char(file, end, '.')) {
+            char *offset_start = *file;
+            uint32_t offset;
+            if (take_number_unsigned(file, end, &offset)) {
+                parse_err(*file, "unsigned number");
+                return true;
+            }
+
+            ObjOffset *obj = arena_alloc(arena, sizeof(*obj), alignof(*obj));
+            *obj = (ObjOffset) {
+                offset,
+                symbol_finish(offset_start, file)
+            };
+
+            instr->offset_count++;
+            continue;
+        } else if (!try_take_char(file, end, '=')) {
+            break;
+        } else {
+            parse_err(*file, "'.' or '='");
+            return true;
+        }
+    }
+
+    // parse expr
+
+    char *expr_type_start = *file;
+    if (take_expr_type(file, end, &instr->expr_type)) {
+        parse_err(*file, "expression type (e.x. 'u8')");
+        return true;
+    }
+    instr->expr_type_symbol = symbol_finish(expr_type_start, file);
+
+    char *expr_start = *file;
+    if (take_number_unsigned(file, end, &instr->expr)) {
+        parse_err(*file, "expression (e.x. '12' or '0x5')");
+        return true;
+    }
+    instr->expr_symbol = symbol_finish(expr_start, file);
+    instr->instr_symbol = symbol_finish(instr_symbol_start, file);
+
+    if (take_whitespace(file, end))
+        return true;
+
+    if (try_take_char(file, end, ';'))
+        return true;
+
+    return false;
+}
+
+Instr *parse(Arena *arena, char *file, char *file_end) { PARSE_TRACE
     Instr *first_instr = NULL;
     Instr *next_instr = NULL;
 
     bool found_err = false;
 
     while (1) {
-        take_whitespace(&file, file_end);
-        if (file >= file_end) break;
+        if (take_whitespace(&file, file_end))
+            break;
 
-        char *instr_start = file;
-
-        Symbol root_name = take_string(&file, file_end);
-        if (root_name.ptr == NULL) {
-            found_err = true;
-            parse_err(file, "root string");
-            goto TAKE_UNTIL_SEMICOLON;
-        }
-
-        uint32_t offset_count = 0;
-        ObjOffset *offsets = arena_align(arena, alignof(*offsets));
-
-        while (1) {
-            take_whitespace(&file, file_end);
-
-            if (file >= file_end) {
-                found_err = true;
-                parse_err(file, "'.' or '='");
-                goto TAKE_UNTIL_SEMICOLON;
-            }
-
-            char c = *file;
-            if (c == '.') {
-                file++;
-                char *obj_offset_start = file;
-                int64_t num = take_number_unsigned(&file, file_end);
-                if (num < 0) {
-                    found_err = true;
-                    parse_err(file, "unsigned number");
-                    goto TAKE_UNTIL_SEMICOLON;
-                }
-                offset_count++;
-                ObjOffset *offset = arena_alloc(arena, sizeof(*offset), alignof(*offset));
-                *offset = (ObjOffset) {
-                    (uint32_t)num,
-                    (Symbol) { obj_offset_start, (size_t)(file - obj_offset_start) }
-                };
-            } else if (c == '=') {
-                if (offset_count == 0) {
-                    found_err = true;
-                    parse_err(file, "'.'");
-                    goto TAKE_UNTIL_SEMICOLON;
-                }
-
-                file++;
-                break;
-            } else {
-                found_err = true;
-                parse_err(file, "'.' or '='");
-                goto TAKE_UNTIL_SEMICOLON;
-            }
-        }
-
-        char *expr_type_start = file;
-        int64_t expr_ret = take_expr_type(&file, file_end);
-        if (expr_ret < 0) {
-            found_err = true;
-            parse_err(file, "type");
-            goto TAKE_UNTIL_SEMICOLON;
-        }
-        ExprType expr_type = (ExprType) expr_ret;
-        Symbol expr_type_symbol = (Symbol) { expr_type_start, (size_t)(file - expr_type_start) };
-
-        char *expr_start = file;
-        expr_ret = take_number_unsigned(&file, file_end);
-        if (expr_ret < 0) {
-            found_err = true;
-            parse_err(file, "expr");
-            goto TAKE_UNTIL_SEMICOLON;
-        }
-        uint32_t expr = (uint32_t)expr_ret;
-        Symbol expr_symbol = (Symbol) { expr_start, (size_t)(file - expr_start) };
+        if (!try_take_char(&file, file_end, '#'))
+            goto TAKE_UNTIL_NEWLINE;
 
         Instr *instr = arena_alloc(arena, sizeof(Instr), alignof(Instr));
+        if (parse_instr(arena, &file, file_end, instr)) {
+            found_err = true;
+            goto TAKE_UNTIL_SEMICOLON;
+        }
+
         if (first_instr == NULL)
             first_instr = instr;
 
@@ -354,21 +388,19 @@ Instr *parse(Arena *arena, char *file, char *file_end) {
             next_instr->next = instr;
         next_instr = instr;
 
-        while (file < file_end && *file != ';')
-            file++;
-
-        Symbol instr_symbol = (Symbol) { instr_start, (size_t)(file - instr_start) };
-
-        *instr = (Instr) {
-            root_name, offset_count, offsets, expr_type, expr,
-            expr_type_symbol, expr_symbol, instr_symbol,
-            NULL
-        };
+        continue;
 
 TAKE_UNTIL_SEMICOLON:
         while (file < file_end && *file != ';')
             file++;
         file++;
+        continue;
+
+TAKE_UNTIL_NEWLINE:
+        while (file < file_end && *file != '\n')
+            file++;
+        file++;
+        continue;
     }
 
     if (found_err)
@@ -405,34 +437,86 @@ void dat_print_err_trailer(DatFile *dat, Instr *instr, Symbol *highlight) {
     }
 }
 
-bool dat_follow_ref(DatFile *dat, DatRef *obj, uint32_t offset) {
-    DatRef ref = *obj + offset;
-    if (ref > dat->data_size) return true;
-    if ((ref & 3) != 0) return true;
-    *obj = READ_U32(dat->data + *obj + offset);
+bool dat_follow_ref(DatFile *dat, Instr *instr, DatRef *obj, ObjOffset *obj_offset) {
+    const char *err = NULL;
+    DatRef ref = *obj + obj_offset->offset;
+    DatRef new_obj = 0;
 
-    if (*obj >= dat->data_size) return true;
+    if (ref > dat->data_size) {
+        err = "is out of bounds";
+        goto ERR;
+    }
+
+    if ((ref & 3) != 0) {
+        err = "has invalid alignment";
+        goto ERR;
+    }
+
+    new_obj = READ_U32(dat->data + *obj + obj_offset->offset);
+
+    if (new_obj >= dat->data_size) {
+        err = "points out of bounds";
+        goto ERR;
+    }
+
+    if ((new_obj & 3) != 0) {
+        err = "points to a object with invalid alignment";
+        goto ERR;
+    }
+
+    if (new_obj == 0) {
+        err = "points to null";
+        goto ERR;
+    }
+
+    *obj = new_obj;
     return false;
+
+ERR:
+    dat_print_err_header(dat, instr);
+    if (new_obj != 0) {
+        fprintf(
+            stderr,
+            "Pointer at 0x%x + '%.*s' -> 0x%x %s",
+            *obj,
+            (int)obj_offset->symbol.size, obj_offset->symbol.ptr,
+            new_obj,
+            err
+        );
+    } else {
+        fprintf(
+            stderr,
+            "Pointer at 0x%x + '%.*s' %s",
+            *obj,
+            (int)obj_offset->symbol.size, obj_offset->symbol.ptr,
+            err
+        );
+    }
+    dat_print_err_trailer(dat, instr, &obj_offset->symbol);
+    return true;
 }
 
 // returns < 0 if err
 bool apply_instr(DatFile *dat, Instr *instr) {
     // find offset -----------------------------------------------------------
 
-    DatRef obj = 0;
+    DatRef obj = UINT32_MAX;
 
+    Symbol target_symbol = instr->root_symbol;
     for (uint32_t i = 0; i < dat->root_count; ++i) {
         DatRootInfo root_info = dat->root_info[i];
         char *root_symbol = dat->symbols + root_info.symbol_offset;
-        Symbol target_symbol = instr->root_name;
 
         bool found = true;
         for (size_t j = 0; j < target_symbol.size; ++j) {
-            if (root_symbol[j] == '0' || root_symbol[j] != target_symbol.ptr[j]) {
+            if (root_symbol[j] == 0 || root_symbol[j] != target_symbol.ptr[j]) {
                 found = false;
                 break;
             }
         }
+
+        if (root_symbol[target_symbol.size] != 0)
+            found = false;
 
         if (found) {
             obj = root_info.data_offset;
@@ -440,28 +524,17 @@ bool apply_instr(DatFile *dat, Instr *instr) {
         }
     }
 
-    if (obj == 0) {
+    if (obj == UINT32_MAX) {
         dat_print_err_header(dat, instr);
-        fprintf(stderr, "Root '%.*s' not found", (int)instr->root_name.size, instr->root_name.ptr);
-        dat_print_err_trailer(dat, instr, &instr->root_name);
+        fprintf(stderr, "Root '%.*s' not found", (int)instr->root_symbol.size, instr->root_symbol.ptr);
+        dat_print_err_trailer(dat, instr, &instr->root_symbol);
         return true;
     }
 
     for (size_t i = 0; i+1 < instr->offset_count; ++i) {
         ObjOffset *obj_offset = &instr->offsets[i];
-        if (dat_follow_ref(dat, &obj, obj_offset->offset)) {
-            dat_print_err_header(dat, instr);
-            fprintf(
-                stderr,
-                "Pointer at offset '%.*s' (0x%x) is invalid",
-                (int)obj_offset->symbol.size,
-                obj_offset->symbol.ptr,
-                obj+obj_offset->offset
-            );
-            dat_print_err_trailer(dat, instr, &obj_offset->symbol);
-
+        if (dat_follow_ref(dat, instr, &obj, obj_offset))
             return true;
-        }
     }
     obj += instr->offsets[instr->offset_count - 1].offset;
 
@@ -514,7 +587,7 @@ bool apply_instr(DatFile *dat, Instr *instr) {
         ObjOffset *obj_offset = &instr->offsets[instr->offset_count - 1];
 
         dat_print_err_header(dat, instr);
-        fprintf(stderr, "Offset '%.*s' has invalid alignment", (int)obj_offset->symbol.size, obj_offset->symbol.ptr);
+        fprintf(stderr, "Offset '%.*s' (0x%x) has invalid alignment", (int)obj_offset->symbol.size, obj_offset->symbol.ptr, obj);
         dat_print_err_trailer(dat, instr, &obj_offset->symbol);
         return true;
     }

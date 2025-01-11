@@ -97,9 +97,13 @@ DAT_RET dat_obj_alloc(DatFile *dat, uint32_t size, DatRef *out);
 DAT_RET dat_obj_set_ref(DatFile *dat, DatRef from, DatRef to);
 DAT_RET dat_obj_remove_ref(DatFile *dat, DatRef from);
 
-// read/writes assert invariants
-uint32_t dat_obj_read_u32(DatFile *dat, DatRef ptr);
-void dat_obj_write_u32(DatFile *dat, DatRef ptr, uint32_t num);
+DAT_RET dat_obj_read_u32(DatFile *dat, DatRef ptr, uint32_t *out);
+DAT_RET dat_obj_read_u16(DatFile *dat, DatRef ptr, uint16_t *out);
+DAT_RET dat_obj_read_u8(DatFile *dat, DatRef ptr, uint8_t *out);
+
+DAT_RET dat_obj_write_u32(DatFile *dat, DatRef ptr, uint32_t num);
+DAT_RET dat_obj_write_u16(DatFile *dat, DatRef ptr, uint16_t num);
+DAT_RET dat_obj_write_u8(DatFile *dat, DatRef ptr, uint8_t num);
 
 // Inserts the object as a root at the specified index. 
 // Appends if `index` == `root_count`.

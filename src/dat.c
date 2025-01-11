@@ -25,7 +25,7 @@ static inline uint32_t align_forward(uint32_t ptr, uint32_t align) {
 
 static DAT_RET realloc_arr(void **arr, uint32_t *prev_cap, uint32_t ele_size) {
     uint32_t new_cap = *prev_cap * ele_size * 2;
-    if (*prev_cap < 2048) new_cap = 4096;
+    if (new_cap < 4096) new_cap = 4096;
     void *new_arr = realloc(*arr, new_cap);
 
     if (new_arr == NULL)
@@ -136,6 +136,7 @@ uint32_t dat_file_export_max_size(const DatFile *dat) {
 DAT_RET dat_file_export(const DatFile *dat, uint8_t *out, uint32_t *size) {
     if (dat == NULL) return DAT_ERR_NULL_PARAM;
     if (out == NULL) return DAT_ERR_NULL_PARAM;
+    if (size == NULL) return DAT_ERR_NULL_PARAM;
 
     WRITE_U32(out+4,  dat->data_size);
     WRITE_U32(out+8,  dat->reloc_count);
@@ -149,17 +150,24 @@ DAT_RET dat_file_export(const DatFile *dat, uint8_t *out, uint32_t *size) {
     if (dat->data != NULL) memcpy(cursor, dat->data, data_size);
     cursor += data_size;
 
-    uint32_t reloc_size = dat->reloc_count * sizeof(DatRef);
-    if (dat->reloc_targets != NULL) memcpy(cursor, dat->reloc_targets, reloc_size);
-    cursor += reloc_size;
+    for (uint32_t i = 0; i < dat->reloc_count; ++i) {
+        WRITE_U32(cursor, dat->reloc_targets[i]);
+        cursor += sizeof(DatRef);
+    }
 
-    uint32_t root_size = dat->root_count * sizeof(DatRootInfo);
-    if (dat->root_info != NULL) memcpy(cursor, dat->root_info, root_size);
-    cursor += root_size;
+    for (uint32_t i = 0; i < dat->root_count; ++i) {
+        WRITE_U32(cursor, dat->root_info[i].data_offset);
+        cursor += sizeof(uint32_t);
+        WRITE_U32(cursor, dat->root_info[i].symbol_offset);
+        cursor += sizeof(uint32_t);
+    }
 
-    uint32_t extern_size = dat->extern_count * sizeof(DatExternInfo);
-    if (dat->extern_info != NULL) memcpy(cursor, dat->extern_info, extern_size);
-    cursor += extern_size;
+    for (uint32_t i = 0; i < dat->extern_count; ++i) {
+        WRITE_U32(cursor, dat->extern_info[i].data_offset);
+        cursor += sizeof(uint32_t);
+        WRITE_U32(cursor, dat->extern_info[i].symbol_offset);
+        cursor += sizeof(uint32_t);
+    }
 
     uint32_t symbol_size = dat->symbol_size;
     if (dat->symbols != NULL) memcpy(cursor, dat->symbols, symbol_size);
@@ -268,8 +276,7 @@ DAT_RET dat_obj_alloc(DatFile *dat, uint32_t size, DatRef *out) {
     uint32_t obj_offset = align_forward(dat->data_size, 4);
     uint32_t new_data_size = obj_offset + size;
 
-    uint32_t prev_cap = dat->data_capacity;
-    while (new_data_size > prev_cap) {
+    while (new_data_size > dat->data_capacity) {
         DAT_RET err = realloc_arr((void **)&dat->data, &dat->data_capacity, 1);
         if (err) return err;
     }
@@ -317,20 +324,56 @@ DAT_RET dat_obj_remove_ref(DatFile *dat, DatRef from) {
     return DAT_SUCCESS;
 }
 
-uint32_t dat_obj_read_u32(DatFile *dat, DatRef ptr) {
-    assert(dat != NULL);
-    assert((ptr & 3) == 0);
-    assert(ptr+4 <= dat->data_size);
+DAT_RET dat_obj_read_u32(DatFile *dat, DatRef ptr, uint32_t *out) {
+    if (dat == NULL) return DAT_ERR_NULL_PARAM;
+    if (ptr & 3) return DAT_ERR_INVALID_ALIGNMENT;
+    if (ptr + 4 > dat->data_size) return DAT_ERR_OUT_OF_BOUNDS;
 
-    return READ_U32(&dat->data[ptr]);
+    *out = READ_U32(&dat->data[ptr]);
+    return DAT_SUCCESS;
 }
 
-void dat_obj_write_u32(DatFile *dat, DatRef ptr, uint32_t num) {
-    assert(dat != NULL);
-    assert((ptr & 3) == 0);
-    assert(ptr+4 <= dat->data_size);
+DAT_RET dat_obj_read_u16(DatFile *dat, DatRef ptr, uint16_t *out) {
+    if (dat == NULL) return DAT_ERR_NULL_PARAM;
+    if (ptr & 1) return DAT_ERR_INVALID_ALIGNMENT;
+    if (ptr + 2 > dat->data_size) return DAT_ERR_OUT_OF_BOUNDS;
 
-    WRITE_U32(&dat->data[ptr], num);
+    *out = READ_U16(&dat->data[ptr]);
+    return DAT_SUCCESS;
+}
+
+DAT_RET dat_obj_read_u8(DatFile *dat, DatRef ptr, uint8_t *out) {
+    if (dat == NULL) return DAT_ERR_NULL_PARAM;
+    if (ptr + 1 > dat->data_size) return DAT_ERR_OUT_OF_BOUNDS;
+
+    *out = dat->data[ptr];
+    return DAT_SUCCESS;
+}
+
+DAT_RET dat_obj_write_u32(DatFile *dat, DatRef ptr, uint32_t num) {
+    if (dat == NULL) return DAT_ERR_NULL_PARAM;
+    if (ptr & 3) return DAT_ERR_INVALID_ALIGNMENT;
+    if (ptr + 4 > dat->data_size) return DAT_ERR_OUT_OF_BOUNDS;
+
+    *(uint32_t*)(&dat->data[ptr]) = num;
+    return DAT_SUCCESS;
+}
+
+DAT_RET dat_obj_write_u16(DatFile *dat, DatRef ptr, uint16_t num) {
+    if (dat == NULL) return DAT_ERR_NULL_PARAM;
+    if (ptr & 1) return DAT_ERR_INVALID_ALIGNMENT;
+    if (ptr + 2 > dat->data_size) return DAT_ERR_OUT_OF_BOUNDS;
+
+    *(uint16_t*)(&dat->data[ptr]) = num;
+    return DAT_SUCCESS;
+}
+
+DAT_RET dat_obj_write_u8(DatFile *dat, DatRef ptr, uint8_t num) {
+    if (dat == NULL) return DAT_ERR_NULL_PARAM;
+    if (ptr + 1 > dat->data_size) return DAT_ERR_OUT_OF_BOUNDS;
+
+    dat->data[ptr] = num;
+    return DAT_SUCCESS;
 }
 
 DAT_RET dat_root_add(DatFile *dat, uint32_t index, DatRef root_obj, const char *symbol) {
